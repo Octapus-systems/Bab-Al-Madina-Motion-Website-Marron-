@@ -1,13 +1,20 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import Lenis from "lenis";
-import { Bird, Package, Truck, ShieldCheck, Award, Clock, MapPin, CheckCircle, Leaf } from "lucide-react";
+import { Bird, Package, Truck, ShieldCheck, Award, Clock, MapPin, CheckCircle, Leaf, Heart, ShoppingBasket, Film, User, Globe } from "lucide-react";
 import { EggIcon } from "../components/EggIcon";
 import { EggLoader } from "../components/EggLoader";
 import { OrderSection } from "../components/OrderSection";
 import { ProductsSection } from "../components/ProductsSection";
 import { FloatingCartBar } from "../components/FloatingCartBar";
-import { CartProvider } from "../lib/cart-context";
+import { CartProvider, useCart } from "../lib/cart-context";
+
+// Customer login lives in the ops/admin app we already built (bab-al-madina) — its login
+// page handles auth, and the same account can see order history there. Override via
+// VITE_OPS_APP_URL if the deployed subdomain differs. Falls back to the raw CloudFront URL —
+// ops.babalbaraka.ae's DNS CNAME isn't resolving yet (NXDOMAIN), so this keeps the button
+// working today; switch back to the custom domain once that DNS record is live.
+const OPS_APP_URL = import.meta.env.VITE_OPS_APP_URL || "https://d10ra4zil7l1f7.cloudfront.net";
 
 
 const ChickenIcon = ({ className }: { className?: string }) => (
@@ -18,68 +25,41 @@ const ChickenIcon = ({ className }: { className?: string }) => (
 
 const logo = { url: "/Logo.png" };
 
-type Scene = {
-  src: string;
-  desktopSrc?: string;
-  loop: boolean;
-  num: string;
-  eyebrow: string;
-  title: string;
-  body: string;
-  align: "right" | "left" | "center";
-  pos: "top" | "bottom" | "middle";
-  revealLastSecs?: number;
-};
+// Total scroll distance (in vh) driving the hero scrub — longer = smoother, more deliberate scrub.
+const HERO_VH = 1100;
+// Fraction of the scrub range where the video finishes; the remainder is a brief hold on the
+// final frame so the video reads as fully complete before the landing page rises over it.
+const VIDEO_END_AT = 0.88;
 
-const SCENES: Scene[] = [
-  {
-    src: "/scene1-mobile.mp4",
-    desktopSrc: "/scene1-desktop.mp4",
-    loop: true,
-    num: "01", eyebrow: "Bab Al Baraka",
-    title: "A Gateway to Blessings",
-    body: "Premium farm fresh eggs — where quality meets care in every single egg we deliver.",
-    align: "right" as const, pos: "middle" as const,
-  },
-  {
-    src: "/scene2-mobile.mp4",
-    desktopSrc: "/scene2-desktop.mp4",
-    loop: false,
-    num: "02", eyebrow: "From Our Farms",
-    title: "Nature Knows Best",
-    body: "Healthy, well-cared-for hens laying fresh eggs daily — pure, natural, and full of goodness.",
-    align: "right" as const, pos: "middle" as const,
-  },
-  {
-    src: "/scene3-mobile.mp4",
-    desktopSrc: "/scene3-desktop.mp4",
-    loop: false,
-    num: "03", eyebrow: "Daily Harvest",
-    title: "Collected Fresh, Every Day",
-    body: "Each egg is gathered daily and quality-checked, so freshness is never left to chance.",
-    align: "right" as const, pos: "top" as const,
-  },
-  {
-    src: "/scene4-mobile.mp4",
-    desktopSrc: "/scene4-desktop.mp4",
-    loop: false,
-    num: "04", eyebrow: "Hygienic Packing",
-    title: "Packed with Care",
-    body: "Sorted, inspected, and sealed in food-grade trays the same day — minimal handling, maximum freshness.",
-    align: "right" as const, pos: "middle" as const,
-    revealLastSecs: 2,
-  },
-  {
-    src: "/scene5-mobile.mp4",
-    desktopSrc: "/scene5-desktop.mp4",
-    loop: false,
-    num: "05", eyebrow: "Order Today",
-    title: "From Our Farm to Your Kitchen",
-    body: "Order online or find us in stores across the UAE — delivered fresh to your doorstep by tomorrow.",
-    align: "left" as const, pos: "middle" as const,
-    revealLastSecs: 2,
-  },
-];
+// Pre-extracted frame sequence (ffmpeg fps=8 off hero-story.mp4) drawn to a <canvas>.
+// Video-element `currentTime` seeking is async per-browser and can't keep up with 60fps
+// scroll input even on an all-intra encode — seeks queue up and visibly lag. Drawing a
+// plain <img> to canvas is synchronous, so this is the only way to get a lag-free scrub.
+const FRAME_COUNT = 359;
+const framePath = (i: number) => `/frames/f-${String(i + 1).padStart(3, "0")}.webp`;
+
+// Bounding box of the egg tray within the video's final frame (source pixels, 1276x720).
+// tray-video.webp is exactly this crop with the background chroma-keyed out, so an overlay
+// placed at this cover-fit-mapped rect sits pixel-perfect on top of the tray in the canvas.
+const VIDEO_W = 1276, VIDEO_H = 720;
+const TRAY_BBOX = { x: 600, y: 195, w: 665, h: 400 };
+
+// Story captions — one per narrative beat in the frame sequence (heritage → care →
+// freshness → kitchen). Each fades in/out over a scroll window centered on `p` (fraction
+// of the full 0..1 scrub range, i.e. already scaled by VIDEO_END_AT). Beat 1 (logo) and
+// the final reveal frame stay textless on purpose — see UX plan.
+// `side` picks the empty half of each frame (opposite wherever that beat's subject sits)
+// so the caption never sits on top of the product. `anim` picks an entrance style suited
+// to that beat's content — a calm brand mark reveals differently than a cracking egg.
+// `window` overrides the default hold length (Kitchen closes the story, so it lingers longer).
+const STORY_BEATS = [
+  { p: 0.045, eyebrow: "Bab Al Baraka", line: "A Gateway to Blessings.", side: "right", anim: "reveal" },
+  { p: 0.148, eyebrow: "Heritage", line: "Rooted in tradition, raised with care.", side: "right", anim: "rise" },
+  { p: 0.443, eyebrow: "Care", line: "Every egg, inspected by hand.", side: "right", anim: "slide" },
+  { p: 0.590, eyebrow: "Freshness", line: "Cracked fresh. Cooked fresh.", side: "left", anim: "pop" },
+  { p: 0.760, eyebrow: "Kitchen", line: "From our farm to your table.", side: "left", anim: "rise", window: 0.22 },
+] as const;
+const BEAT_WINDOW = 0.13; // default total width of each beat's visible span — longer hold per caption
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -92,280 +72,458 @@ export const Route = createFileRoute("/")({
   component: Index,
 });
 
-// ── Text overlay — key prop forces remount = replays animation ───────────────
-function TextOverlay({ scene, visible }: { scene: typeof SCENES[0]; visible: boolean }) {
-  // Mobile: always top, centered. Desktop (md+): per-scene pos/align.
-  const posClass =
-    scene.pos === "top" ? "top-28 md:top-32"
-    : scene.pos === "middle" ? "top-28 md:top-1/2 md:-translate-y-1/2"
-    : "top-28 md:top-auto md:bottom-20";
-  const alignClass =
-    scene.align === "right"
-      ? "inset-x-0 mx-auto items-center text-center md:right-0 md:inset-x-auto md:mx-0 md:items-end md:text-right px-6 md:px-14 max-w-sm md:max-w-lg"
-      : scene.align === "left"
-        ? "inset-x-0 mx-auto items-center text-center md:left-0 md:inset-x-auto md:mx-0 md:items-start md:text-left px-6 md:px-14 max-w-sm md:max-w-lg"
-        : "inset-x-0 mx-auto items-center text-center px-6 md:px-8 max-w-sm md:max-w-xl";
-
-  const gated = !!scene.revealLastSecs;
-  const lineStyle = (delayMs: number): CSSProperties =>
-    gated
-      ? {
-          opacity: visible ? 1 : 0,
-          filter: visible ? "blur(0px)" : "blur(10px)",
-          transform: visible ? "translateY(0)" : "translateY(14px)",
-          transition: `opacity 0.7s cubic-bezier(.22,1,.36,1) ${delayMs}ms, filter 0.7s cubic-bezier(.22,1,.36,1) ${delayMs}ms, transform 0.7s cubic-bezier(.22,1,.36,1) ${delayMs}ms`,
-        }
-      : {
-          animation: `textRiseIn 0.8s cubic-bezier(.22,1,.36,1) ${delayMs}ms both`,
-        };
-
+// ── Main ─────────────────────────────────────────────────────────────────────
+// CartProvider wraps the whole page (not just the products/order sections) so the
+// header's cart button can show a live item count.
+function Index() {
   return (
-    <div className={`absolute z-10 flex flex-col ${posClass} ${alignClass}`}>
-      <div className="text-[11px] tracking-[0.4em] uppercase text-white/60 mb-3" style={lineStyle(0)}>
-        {scene.num} — {scene.eyebrow}
-      </div>
-      <h2 className="font-serif text-3xl md:text-5xl lg:text-6xl leading-[1.05] mb-4 text-white" style={lineStyle(120)}>
-        {scene.title}
-      </h2>
-      <p className="text-sm md:text-base text-white/80 leading-relaxed" style={lineStyle(240)}>
-        {scene.body}
-      </p>
-    </div>
+    <CartProvider>
+      <IndexInner />
+    </CartProvider>
   );
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
-function Index() {
+function IndexInner() {
   const [isLoading, setIsLoading] = useState(true);
-  const [active, setActive] = useState(0);
-  const [isDesktop, setIsDesktop] = useState(false);
-  const [textVisible, setTextVisible] = useState(true);
-  const videoRefs    = useRef<(HTMLVideoElement | null)[]>([]);
-  const sentinelRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const { cartCount } = useCart();
+  // Lightweight EN/AR label toggle for the header/hero chrome — swaps visible strings only.
+  // Not a full RTL layout switch (the scroll-scrubbed hero relies on fixed pixel math that
+  // a mirrored layout would break); this covers the nav + hero-copy request, full site
+  // translation is a bigger follow-up.
+  const [lang, setLang] = useState<"en" | "ar">("en");
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Fly-down tray handoff: fixed overlay detaches from the video's final frame and lands
+  // on the podium spot occupied by the in-flow landing tray.
+  const trayFlyRef = useRef<HTMLImageElement>(null);
+  const trayTargetRef = useRef<HTMLImageElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const framesRef = useRef<HTMLImageElement[]>([]);
+  const lastFrameIdxRef = useRef(-1);
+  // Scroll-driven UI updated via direct DOM writes (not React state) — a setState here
+  // would re-render the entire page tree on every scroll tick and visibly jank the scrub.
+  const progressBarRef = useRef<HTMLDivElement>(null);
+  const hintRef = useRef<HTMLDivElement>(null);
+  const skipRef = useRef<HTMLButtonElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  const captionRefs = useRef<(HTMLDivElement | null)[]>([]);
 
+  // Preload every frame up front (small jpgs, ~3MB total) and draw the first one as
+  // soon as it lands so there's no blank flash before scrolling starts.
   useEffect(() => {
-    const handleResize = () => setIsDesktop(window.innerWidth >= 768);
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    const canvas = canvasRef.current;
+    const draw = (img: HTMLImageElement) => {
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      const dpr = window.devicePixelRatio || 1;
+      const cw = window.innerWidth, ch = window.innerHeight;
+      if (canvas.width !== cw * dpr || canvas.height !== ch * dpr) {
+        canvas.width = cw * dpr;
+        canvas.height = ch * dpr;
+      }
+      const scale = Math.max(canvas.width / img.width, canvas.height / img.height);
+      const dw = img.width * scale, dh = img.height * scale;
+      const dx = (canvas.width - dw) / 2, dy = (canvas.height - dh) / 2;
+      ctx.drawImage(img, dx, dy, dw, dh);
+    };
+
+    for (let i = 0; i < FRAME_COUNT; i++) {
+      const img = new Image();
+      img.src = framePath(i);
+      framesRef.current[i] = img;
+      if (i === 0) img.onload = () => draw(img);
+    }
+
+    const onResize = () => {
+      const img = framesRef.current[lastFrameIdxRef.current] ?? framesRef.current[0];
+      if (img?.complete) draw(img);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Switch video when active changes
+  // Scroll-reveal: add `.reveal-in` to any `.reveal` element the first time it enters view.
   useEffect(() => {
-    videoRefs.current.forEach((vid, i) => {
-      if (!vid) return;
-      if (i === active) {
-        if (vid.preload === "none") { vid.preload = "auto"; vid.load(); }
-        vid.currentTime = 0;
-        const tryPlay = () => vid.play().catch(() => {});
-        if (vid.readyState >= 3) tryPlay();
-        else vid.addEventListener("canplay", tryPlay, { once: true });
-      } else {
-        vid.pause();
-      }
-    });
-  }, [active, isDesktop]);
+    const els = Array.from(document.querySelectorAll<HTMLElement>(".reveal"));
+    if (!els.length) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (e.isIntersecting) {
+            e.target.classList.add("reveal-in");
+            io.unobserve(e.target); // one-shot — never replay
+          }
+        });
+      },
+      { threshold: 0.18, rootMargin: "0px 0px -8% 0px" }
+    );
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, []);
 
-  // Eagerly buffer every scene shortly after first paint so scene switches never stall
-  useEffect(() => {
-    const t = setTimeout(() => {
-      videoRefs.current.forEach((vid) => {
-        if (vid && vid.preload === "none") { vid.preload = "auto"; vid.load(); }
-      });
-    }, 1500);
-    return () => clearTimeout(t);
-  }, [isDesktop]);
-
-  // Late-reveal text: for scenes with revealLastSecs, only show text during the final N seconds
-  useEffect(() => {
-    const revealSecs = SCENES[active].revealLastSecs;
-    if (!revealSecs) { setTextVisible(true); return; }
-    setTextVisible(false);
-    const vid = videoRefs.current[active];
-    if (!vid) return;
-    const handleTimeUpdate = () => {
-      if (vid.duration && vid.duration - vid.currentTime <= revealSecs) setTextVisible(true);
-    };
-    vid.addEventListener("timeupdate", handleTimeUpdate);
-    return () => vid.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [active, isDesktop]);
-
-  // Lenis smooth scrolling — interpolates all wheel/touch input for a buttery, seamless feel
+  // Lenis smooth scrolling — interpolates all wheel/touch input for a buttery, seamless feel.
+  // The video-scrub logic runs INSIDE Lenis's own rAF tick (via lenis.on('scroll', ...)) rather
+  // than a separate native `scroll` listener — Lenis drives scroll position programmatically every
+  // frame, and native scroll events aren't guaranteed to fire in lockstep with that, which is why
+  // scrubbing driven off `window.scrollY` + a native listener could silently fall out of sync.
   const lenisRef = useRef<Lenis | null>(null);
   useEffect(() => {
     const lenis = new Lenis({ lerp: 0.08, smoothWheel: true });
     lenisRef.current = lenis;
+
+    // Sub-frame crossfade: the fractional index between two neighbouring frames becomes a
+    // blend alpha, so motion interpolates BETWEEN captured frames instead of stepping from
+    // one to the next — perceived smoothness well beyond the 15fps capture rate.
+    const drawBlended = (f: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const i0 = Math.min(FRAME_COUNT - 1, Math.floor(f));
+      const i1 = Math.min(FRAME_COUNT - 1, i0 + 1);
+      const frac = f - i0;
+      const imgA = framesRef.current[i0];
+      const imgB = framesRef.current[i1];
+      const ready = (im?: HTMLImageElement) => im && im.complete && im.naturalWidth > 0;
+      if (!ready(imgA)) return;
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      const dpr = Math.min(2, window.devicePixelRatio || 1); // cap: >2x canvases cost fillrate, gain nothing visible
+      const cw = window.innerWidth, ch = window.innerHeight;
+      if (canvas.width !== cw * dpr || canvas.height !== ch * dpr) {
+        canvas.width = cw * dpr;
+        canvas.height = ch * dpr;
+      }
+      const fit = (img: HTMLImageElement) => {
+        const scale = Math.max(canvas.width / img.width, canvas.height / img.height);
+        const dw = img.width * scale, dh = img.height * scale;
+        return [(canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh] as const;
+      };
+
+      ctx.globalAlpha = 1;
+      ctx.drawImage(imgA!, ...fit(imgA!));
+      if (frac > 0.01 && i1 !== i0 && ready(imgB)) {
+        ctx.globalAlpha = frac;
+        ctx.drawImage(imgB!, ...fit(imgB!));
+        ctx.globalAlpha = 1;
+      }
+    };
+
+    const applyScroll = (scrollY: number) => {
+      const heroPx = (HERO_VH / 100) * window.innerHeight;
+      const p = Math.min(1, Math.max(0, scrollY / heroPx));
+
+      // Scroll-driven chrome — written straight to the DOM so React never re-renders mid-scroll.
+      if (progressBarRef.current) {
+        progressBarRef.current.style.width = `${p * 100}%`;
+        progressBarRef.current.style.opacity = p >= 1 ? "0" : "1";
+      }
+      if (hintRef.current) {
+        hintRef.current.style.opacity = p < 0.03 ? String(1 - p / 0.03) : "0";
+      }
+      // Skip-to-shop button — visible through the whole story, fades out as the landing arrives.
+      if (skipRef.current) {
+        const so = p < 0.86 ? 1 : Math.max(0, 1 - (p - 0.86) / 0.06);
+        skipRef.current.style.opacity = String(so);
+        skipRef.current.style.pointerEvents = so > 0.2 ? "auto" : "none";
+      }
+      if (headerRef.current) {
+        const ho = p < 0.92 ? 0 : (p - 0.92) / 0.08;
+        headerRef.current.style.opacity = String(ho);
+        headerRef.current.style.pointerEvents = ho > 0.5 ? "auto" : "none";
+      }
+
+      // Story captions — fade in/out around each beat's center, easeIn over the first 15%
+      // of the window and easeOut over the last 20%, matching the crossfade's own pacing.
+      STORY_BEATS.forEach((beat, i) => {
+        const el = captionRefs.current[i];
+        if (!el) return;
+        const w = "window" in beat ? beat.window : BEAT_WINDOW;
+        const start = beat.p - w / 2;
+        const end = beat.p + w / 2;
+        const fadeInEnd = start + w * 0.15;
+        const fadeOutStart = end - w * 0.20;
+        let o = 0;
+        let raw = 0; // unclamped entrance progress, for overshoot easing (pop)
+        if (p >= start && p <= end) {
+          if (p < fadeInEnd) { raw = (p - start) / (fadeInEnd - start); o = raw; }
+          else if (p > fadeOutStart) o = 1 - (p - fadeOutStart) / (end - fadeOutStart);
+          else { o = 1; raw = 1; }
+        }
+        el.style.opacity = String(o);
+        const dir = beat.side === "right" ? 1 : -1;
+        switch (beat.anim) {
+          case "reveal": // calm brand mark: gentle scale + fade, no travel
+            el.style.transform = `scale(${0.97 + o * 0.03})`;
+            break;
+          case "slide": // travels in from its own side, settles level
+            el.style.transform = `translateX(${(1 - o) * 28 * dir}px)`;
+            break;
+          case "pop": { // slight overshoot scale — matches the crack/snap of the beat
+            const eased = raw < 1 ? 1.06 * (1 - Math.pow(1 - raw, 3)) - 0.06 * raw : 1;
+            const s = o < 1 ? 0.88 + eased * 0.12 : 1;
+            el.style.transform = `scale(${Math.max(0.88, s)}) translateY(${(1 - o) * 6}px)`;
+            break;
+          }
+          case "rise":
+          default:
+            el.style.transform = `translateY(${(1 - o) * 16}px)`;
+        }
+      });
+
+      const videoP = Math.min(1, p / VIDEO_END_AT); // video completes at VIDEO_END_AT, then holds
+      const f = videoP * (FRAME_COUNT - 1); // fractional frame index
+
+      // Decode lookahead: warm the next few frames off the hot path so drawImage never
+      // has to synchronously decode a webp mid-scroll (the classic first-pass stutter).
+      const ahead = Math.floor(f);
+      for (let i = ahead + 1; i <= Math.min(FRAME_COUNT - 1, ahead + 6); i++) {
+        const im = framesRef.current[i];
+        if (im?.complete) im.decode?.().catch(() => {});
+      }
+
+      if (Math.abs(f - lastFrameIdxRef.current) > 0.005) {
+        lastFrameIdxRef.current = f;
+        drawBlended(f);
+      }
+
+      // ── Tray fly-down handoff ─────────────────────────────────────────────
+      // While the pinned video scrolls away (its last viewport-height of travel), a fixed
+      // overlay of the tray detaches from the final frame and glides down onto the podium,
+      // landing exactly where the in-flow landing tray sits. Then the in-flow tray takes over.
+      const vh = window.innerHeight, vw = window.innerWidth;
+      const exitStart = heroPx - vh; // canvas begins sliding out here
+      const t = Math.min(1, Math.max(0, (scrollY - exitStart) / vh));
+      const fly = trayFlyRef.current;
+      const target = trayTargetRef.current;
+      const canvas = canvasRef.current;
+
+      if (fly && target) {
+        if (t > 0 && t < 1) {
+          // Source: tray bbox in the final frame, cover-fit-mapped to the viewport.
+          const s = Math.max(vw / VIDEO_W, vh / VIDEO_H);
+          const offX = (vw - VIDEO_W * s) / 2, offY = (vh - VIDEO_H * s) / 2;
+          const src = { x: offX + TRAY_BBOX.x * s, y: offY + TRAY_BBOX.y * s, w: TRAY_BBOX.w * s, h: TRAY_BBOX.h * s };
+          const dst = target.getBoundingClientRect();
+          const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; // easeInOutCubic
+          fly.style.display = "block";
+          fly.style.left = `${src.x + (dst.x - src.x) * e}px`;
+          fly.style.top = `${src.y + (dst.y - src.y) * e}px`;
+          fly.style.width = `${src.w + (dst.width - src.w) * e}px`;
+          fly.style.height = `${src.h + (dst.height - src.h) * e}px`;
+          target.style.opacity = "0";
+          // Fade the canvas early so its baked-in tray doesn't double up with the flying one.
+          if (canvas) canvas.style.opacity = String(Math.max(0, 1 - t / 0.3));
+        } else {
+          fly.style.display = "none";
+          target.style.opacity = t >= 1 ? "1" : "0";
+          if (canvas) canvas.style.opacity = t >= 1 ? "0" : "1";
+        }
+      }
+    };
+
+    lenis.on("scroll", ({ scroll }: { scroll: number }) => applyScroll(scroll));
+    // Also react to native scroll (keyboard paging, anchor jumps, programmatic scrolls) —
+    // Lenis only emits for input it drives itself, so these would otherwise desync the scrub.
+    const onNativeScroll = () => applyScroll(window.scrollY);
+    window.addEventListener("scroll", onNativeScroll, { passive: true });
+
     let raf = 0;
     const loop = (time: number) => {
       lenis.raf(time);
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
+    applyScroll(window.scrollY); // initial paint (e.g. reload mid-scroll)
+
     return () => {
       cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onNativeScroll);
       lenis.destroy();
       lenisRef.current = null;
     };
   }, []);
 
-  const sceneLock = useRef(false);
-  const scrollToScene = (i: number) => {
-    setActive(i);
-    const topPos = sentinelRefs.current[i]?.offsetTop ?? (i * window.innerHeight);
-    sceneLock.current = true;
-    lenisRef.current?.scrollTo(topPos, {
-      duration: 1.2,
-      lock: true,
-      onComplete: () => {
-        // Small cooldown so trailing wheel momentum can't skip a scene
-        setTimeout(() => { sceneLock.current = false; }, 250);
-      },
-    });
+  const scrollToId = (id: string) => {
+    const el = document.getElementById(id);
+    if (el) lenisRef.current?.scrollTo(el, { duration: 1.3 });
   };
-
-  // One wheel gesture = one scene while inside the hero story.
-  // Captured before Lenis so momentum can never skip scenes; past the last
-  // scene the wheel falls through to normal (Lenis-smoothed) scrolling.
-  useEffect(() => {
-    const onWheel = (e: WheelEvent) => {
-      const vh = window.innerHeight;
-      const heroEnd = (SCENES.length - 1) * vh;
-      const y = window.scrollY;
-      const inHero = y < heroEnd - 1;
-      const atHeroEnd = y <= heroEnd + 1;
-      const cur = Math.min(SCENES.length - 1, Math.max(0, Math.round(y / vh)));
-
-      if (e.deltaY > 0) {
-        if (!inHero) return; // at/after last scene — normal scroll continues to products
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        if (!sceneLock.current) scrollToScene(Math.min(SCENES.length - 1, cur + 1));
-      } else if (e.deltaY < 0) {
-        if (!atHeroEnd || cur === 0) return; // above scene 0 or below hero — normal scroll
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        if (!sceneLock.current) scrollToScene(Math.max(0, cur - 1));
-      }
-    };
-    window.addEventListener("wheel", onWheel, { passive: false, capture: true });
-    return () => window.removeEventListener("wheel", onWheel, { capture: true });
-  }, []);
-
-  // Scroll-driven scene switching (touch/drag/scrollbar paths) — midpoint of each 100vh band
-  useEffect(() => {
-    let raf = 0;
-    const onScroll = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        const i = Math.min(
-          SCENES.length - 1,
-          Math.max(0, Math.round(window.scrollY / window.innerHeight)),
-        );
-        setActive((prev) => (prev === i ? prev : i));
-      });
-    };
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, []);
 
   return (
     <div ref={scrollContainerRef} className="w-full relative">
       {isLoading && <EggLoader onComplete={() => setIsLoading(false)} />}
-      
-      {/* Inject keyframe once */}
+
       <style>{`
-        @keyframes textRiseIn {
-          from { opacity: 0; filter: blur(10px); transform: translateY(14px); }
-          to   { opacity: 1; filter: blur(0px); transform: translateY(0); }
+        @keyframes trayDropIn {
+          from { opacity: 0; transform: translateY(48px) scale(0.94); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
         }
         /* Hide the browser scrollbar — page still scrolls normally */
         html { scrollbar-width: none; -ms-overflow-style: none; }
         html::-webkit-scrollbar { display: none; }
+
+        /* Scroll-reveal: elements start hidden + offset, animate in when they enter view.
+           .reveal-in is toggled by an IntersectionObserver. Variant classes pick direction. */
+        .reveal { opacity: 0; transform: translateY(40px); transition: opacity .8s cubic-bezier(.22,1,.36,1), transform .8s cubic-bezier(.22,1,.36,1); }
+        .reveal-left  { transform: translateX(-60px); }
+        .reveal-right { transform: translateX(60px); }
+        .reveal-zoom  { transform: scale(.86); }
+        .reveal.reveal-in { opacity: 1; transform: none; }
+        /* Per-child stagger inside a revealed card (reveal-stagger nested under a .reveal-in) */
+        .reveal-stagger > * { opacity: 0; transform: translateY(16px); transition: opacity .6s ease, transform .6s ease; }
+        /* .reveal-stagger can either wrap children directly (same element gets both classes,
+           e.g. the commitment grid) or sit nested inside a separate .reveal ancestor (the
+           card lists) — cover both with a combo selector and a descendant selector. */
+        .reveal-in.reveal-stagger > *,
+        .reveal-in .reveal-stagger > * { opacity: 1; transform: none; }
+        .reveal-in.reveal-stagger > *:nth-child(1), .reveal-in .reveal-stagger > *:nth-child(1) { transition-delay: .18s; }
+        .reveal-in.reveal-stagger > *:nth-child(2), .reveal-in .reveal-stagger > *:nth-child(2) { transition-delay: .30s; }
+        .reveal-in.reveal-stagger > *:nth-child(3), .reveal-in .reveal-stagger > *:nth-child(3) { transition-delay: .42s; }
+        .reveal-in.reveal-stagger > *:nth-child(4), .reveal-in .reveal-stagger > *:nth-child(4) { transition-delay: .54s; }
+        /* Icon badge flourish on reveal */
+        @keyframes badgePop { 0% { transform: scale(.4) rotate(-25deg); opacity: 0; } 60% { transform: scale(1.12) rotate(6deg); } 100% { transform: scale(1) rotate(0); opacity: 1; } }
+        .reveal-in .badge-pop { animation: badgePop .7s cubic-bezier(.34,1.56,.64,1) both; animation-delay: .15s; }
+        @media (prefers-reduced-motion: reduce) {
+          .reveal, .reveal-stagger > * { opacity: 1 !important; transform: none !important; }
+          .reveal-in .badge-pop { animation: none; }
+        }
       `}</style>
 
-      {/* Fixed full-screen canvas */}
-      <div className="fixed inset-0 z-0 bg-[#2a0003] h-[100dvh] w-full">
-        {SCENES.map((scene, i) => (
-          <video
-            key={i}
-            ref={el => { videoRefs.current[i] = el; }}
-            src={isDesktop && scene.desktopSrc ? scene.desktopSrc : scene.src}
-            muted
-            playsInline
-            loop={scene.loop}
-            preload={i === 0 ? "auto" : "none"}
-            autoPlay={i === 0}
-            className="absolute inset-0 h-full w-full object-contain md:object-cover"
-            style={{
-              opacity: i === active ? 1 : 0,
-              transition: "opacity 0.7s ease",
-              willChange: "opacity",
-              transform: "translateZ(0)",
-            }}
-          />
-        ))}
+      {/* Scroll progress bar — width/opacity driven by direct DOM writes in applyScroll */}
+      <div ref={progressBarRef} className="fixed top-0 left-0 h-1 bg-[#d4af37] z-50" style={{ width: "0%" }} />
 
-        {/* Text — key=active forces remount & replays animation */}
-        <TextOverlay key={active} scene={SCENES[active]} visible={textVisible} />
-      </div>
+      {/* Skip-to-shop — always available through the story so returning visitors can jump
+          straight to buying. Opacity/pointer-events driven by applyScroll. */}
+      <button
+        ref={skipRef}
+        onClick={() => scrollToId("products-section")}
+        className="fixed top-5 right-4 md:right-8 z-50 group flex items-center gap-2 rounded-full bg-black/30 hover:bg-black/50 backdrop-blur-md border border-white/20 px-4 py-2 text-white/80 hover:text-white text-[11px] md:text-xs tracking-[0.2em] uppercase transition-colors"
+        style={{ opacity: 1, transition: "opacity 0.3s ease, background-color 0.2s ease, color 0.2s ease" }}
+      >
+        Skip to Shop
+        <span className="transition-transform group-hover:translate-x-0.5">↓</span>
+      </button>
 
-      {/* Scrollable sentinels — one per scene, each 100vh */}
-      <div className="relative z-10" style={{ height: `${SCENES.length * 100}dvh` }}>
-        {SCENES.map((_, i) => (
+      {/* Flying tray — fixed overlay that detaches from the video's last frame and lands on the podium */}
+      <img
+        ref={trayFlyRef}
+        src="/tray-video.webp"
+        alt=""
+        aria-hidden
+        className="fixed z-30 pointer-events-none drop-shadow-[0_50px_60px_rgba(0,0,0,0.55)]"
+        style={{ display: "none" }}
+      />
+
+      {/* Sticky hero canvas: pre-extracted frame sequence, no overlays. Pins for the scrub
+          range, then scrolls away naturally as the wrapper below runs out — the landing
+          page rises over it like a normal page, no manual fade/crossfade needed. */}
+      <div style={{ height: `${HERO_VH}dvh` }} className="relative z-0">
+        <div className="sticky top-0 h-[100dvh] w-full overflow-hidden bg-[#2a0003]">
+          <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+
+          {/* Story captions — one per narrative beat, opacity/position driven by applyScroll */}
+          {STORY_BEATS.map((beat, i) => (
+            <div
+              key={beat.eyebrow}
+              ref={(el) => { captionRefs.current[i] = el; }}
+              className={`absolute top-1/2 -translate-y-1/2 px-6 md:px-0 max-w-xl pointer-events-none ${
+                beat.side === "right"
+                  ? "right-0 md:right-16 text-right items-end"
+                  : "left-0 md:left-16 text-left items-start"
+              } flex flex-col`}
+              style={{ opacity: 0, willChange: "opacity, transform", transformOrigin: beat.side === "right" ? "right center" : "left center" }}
+            >
+              <p className="text-xs md:text-sm tracking-[0.5em] uppercase text-[#d4af37] mb-3" style={{ textShadow: "0 2px 12px rgba(0,0,0,0.6)" }}>
+                {beat.eyebrow}
+              </p>
+              <p
+                className="font-serif text-4xl md:text-6xl lg:text-7xl text-white leading-[1.1]"
+                style={{ textShadow: "0 4px 30px rgba(0,0,0,0.65), 0 2px 8px rgba(0,0,0,0.5)" }}
+              >
+                {beat.line}
+              </p>
+            </div>
+          ))}
+
+          {/* Scroll hint — functional cue only, gone the instant scrubbing starts */}
           <div
-            key={i}
-            ref={el => { sentinelRefs.current[i] = el; }}
-            className="h-[100dvh] w-full"
-          />
-        ))}
+            ref={hintRef}
+            className="absolute bottom-8 inset-x-0 flex flex-col items-center gap-2 text-white/50 text-[10px] tracking-[0.3em] uppercase pointer-events-none"
+            style={{ opacity: 1, transition: "opacity 0.3s ease" }}
+          >
+            <span>Scroll to play</span>
+            <span className="w-5 h-8 rounded-full border border-white/30 flex items-start justify-center p-1.5">
+              <span className="w-1 h-1.5 rounded-full bg-white/70 animate-bounce" />
+            </span>
+          </div>
+        </div>
       </div>
 
-      {/* ── Farm Fresh Section ───────────────────────────────────────────── */}
-      <div className="relative z-10 bg-[#faf6f0] overflow-hidden">
-        {/* Scattered decorative eggs as watermark */}
-        <div className="absolute top-10 left-0 -translate-x-1/4 opacity-40 pointer-events-none rotate-[15deg]">
-           <EggIcon className="w-96 h-96 text-[#d4c3b3]" />
-        </div>
-        <div className="absolute top-64 right-0 translate-x-1/4 opacity-40 pointer-events-none -rotate-[25deg]">
-           <EggIcon className="w-80 h-80 text-[#d4c3b3]" />
-        </div>
-        <div className="absolute top-[40%] left-10 opacity-30 pointer-events-none rotate-[45deg]">
-           <EggIcon className="w-64 h-64 text-[#d4c3b3]" />
-        </div>
-        <div className="absolute top-[60%] right-10 opacity-30 pointer-events-none -rotate-[10deg]">
-           <EggIcon className="w-72 h-72 text-[#d4c3b3]" />
-        </div>
-        <div className="absolute bottom-10 left-[20%] opacity-40 pointer-events-none rotate-[30deg]">
-           <EggIcon className="w-56 h-56 text-[#d4c3b3]" />
+      {/* ── Landing Hero — maroon podium bg, tray lands on the podium (reference design) ── */}
+      <div id="product-hero" className="relative z-10 overflow-hidden bg-[#3a060d]">
+        <div
+          className="absolute inset-0 bg-cover bg-center"
+          style={{ backgroundImage: "url(/hero-bg.jpg)" }}
+        />
+
+        <div className="relative max-w-7xl mx-auto px-6 md:px-12 pt-28 md:pt-36 pb-28 md:pb-40 grid md:grid-cols-2 gap-12 items-center">
+          {/* Left — copy */}
+          <div className="text-center md:text-left">
+            <p className="text-[11px] md:text-xs tracking-[0.35em] uppercase text-[#d4af37] mb-5 font-medium">
+              Fresh From Farm to Your Home
+            </p>
+            <h2 className="font-serif text-5xl md:text-7xl text-white leading-[1.08] mb-6">
+              Fresh Eggs,<br />Everyday.
+            </h2>
+            <p className="text-base md:text-lg text-white/75 max-w-sm mx-auto md:mx-0 leading-relaxed mb-8">
+              Premium quality eggs delivered to your doorstep within 24 hours.
+            </p>
+
+            {/* Feature row */}
+            <div className="flex flex-wrap items-center justify-center md:justify-start gap-x-0 gap-y-4 mb-10 text-white/90">
+              {[
+                { icon: <Leaf className="w-4 h-4" />, label: <>Farm Fresh</> },
+                { icon: <ShieldCheck className="w-4 h-4" />, label: <>Premium<br />Quality</> },
+                { icon: <Truck className="w-4 h-4" />, label: <>Delivered in<br />24 Hours</> },
+              ].map((f, i) => (
+                <div key={i} className={`flex items-center gap-3 px-5 first:pl-0 ${i > 0 ? "border-l border-white/20" : ""}`}>
+                  <span className="w-11 h-11 rounded-full border border-white/30 flex items-center justify-center shrink-0">{f.icon}</span>
+                  <span className="text-sm leading-snug text-left">{f.label}</span>
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={() => scrollToId("order-section")}
+              className="group inline-flex items-center gap-3 bg-[#d9a94e] hover:bg-[#e5b85f] text-[#2a0509] font-semibold px-8 py-4 rounded-full transition-colors shadow-[0_10px_30px_rgba(217,169,78,0.35)]"
+            >
+              Order Now
+              <span className="transition-transform group-hover:translate-x-1">→</span>
+            </button>
+          </div>
+
+          {/* Right — tray sits on the podium in the bg image (revealed once the fly-down lands) */}
+          <div className="relative flex justify-center md:justify-end">
+            <img
+              ref={trayTargetRef}
+              src="/tray-video.webp"
+              alt="Bab Al Baraka 30 fresh eggs tray"
+              className="w-full max-w-lg md:max-w-xl drop-shadow-[0_50px_60px_rgba(0,0,0,0.55)] md:translate-y-40 md:-mt-40"
+              style={{ opacity: 0 }}
+            />
+          </div>
         </div>
 
-        {/* Hero headline */}
-        <div className="relative z-10 max-w-5xl mx-auto px-6 md:px-12 pt-32 pb-20 text-center">
-          <p className="inline-block border border-[#8b1a1a]/20 rounded-full px-4 py-1.5 text-[10px] md:text-xs tracking-[0.4em] uppercase text-[#8b1a1a] mb-8 bg-[#8b1a1a]/5">
-             Bab Al Baraka Eggs
-          </p>
-          <h2 className="font-serif text-5xl md:text-7xl text-[#1a1a1a] leading-[1.1] mb-8">
-            Fresh From Farm.<br />
-            <span className="text-[#8b1a1a] italic">Delivered Tomorrow.</span>
-          </h2>
-          <p className="text-lg md:text-xl text-[#555] max-w-2xl mx-auto leading-relaxed font-light">
-            Premium farm fresh eggs carefully selected, quality inspected, packed hygienically and delivered across the UAE.
-          </p>
-        </div>
+        {/* Wavy transition into the cream section */}
+        <svg className="absolute bottom-0 left-0 w-full text-[#faf3e7]" viewBox="0 0 1440 110" preserveAspectRatio="none" fill="currentColor" aria-hidden>
+          <path d="M0,64 C240,110 480,110 720,84 C960,58 1200,20 1440,44 L1440,110 L0,110 Z" />
+        </svg>
+      </div>
 
-        {/* Divider */}
-        <div className="flex items-center gap-4 max-w-5xl mx-auto px-6 md:px-12 mb-12">
-          <div className="flex-1 h-px bg-[#8b1a1a]/20" />
-          <div className="w-2 h-2 rounded-full bg-[#8b1a1a]/40" />
-          <div className="flex-1 h-px bg-[#8b1a1a]/20" />
-        </div>
-
+      <div className="relative z-10 overflow-hidden">
         {/* Why Choose Section Background */}
         <div className="bg-[#faf6f0] py-24 relative overflow-hidden">
           {/* Decorative Eggs/Leaves Background */}
@@ -383,7 +541,7 @@ function Index() {
           </div>
 
           {/* Why Choose heading */}
-          <div className="relative z-10 max-w-5xl mx-auto px-6 md:px-12 text-center mb-20">
+          <div className="reveal reveal-zoom relative z-10 max-w-5xl mx-auto px-6 md:px-12 text-center mb-20">
              <div className="flex justify-center items-center gap-4 mb-4">
                 <Leaf className="w-6 h-6 text-green-700" />
                 <h4 className="font-serif italic text-xl md:text-2xl text-[#8b1a1a]">Dear Valuable Customer,</h4>
@@ -393,9 +551,10 @@ function Index() {
                 Why Choose <br/>
                 <span className="text-[#8b1a1a]">BAB AL BARAKA EGGS?</span>
              </h2>
+             <div className="w-24 h-1 bg-gradient-to-r from-transparent via-[#d4af37] to-transparent mx-auto mt-6" />
           </div>
 
-          {/* Three feature cards - Stacked and Stylized */}
+          {/* Three feature cards - Stacked and Stylized, alternating slide-in on reveal */}
           <div className="relative z-10 max-w-4xl mx-auto px-6 md:px-12 flex flex-col gap-12 mb-8">
             {[
               {
@@ -423,24 +582,26 @@ function Index() {
                   <>Fast delivery with minimal handling to maintain quality.</>
                 ],
               },
-            ].map((card) => (
+            ].map((card, ci) => (
               <div
                 key={card.title}
-                className="relative bg-white rounded-3xl p-6 md:p-8 md:pl-32 border border-[#8b1a1a]/10 shadow-[0_8px_30px_rgba(139,26,26,0.06)] hover:shadow-[0_8px_30px_rgba(139,26,26,0.12)] transition-shadow duration-300 flex flex-col md:flex-row items-center md:items-start text-center md:text-left gap-6 md:gap-0"
+                className={`reveal ${ci % 2 === 0 ? "reveal-left" : "reveal-right"} group relative bg-white rounded-3xl p-6 md:p-8 md:pl-32 border border-[#8b1a1a]/10 shadow-[0_8px_30px_rgba(139,26,26,0.06)] hover:shadow-[0_20px_50px_rgba(139,26,26,0.16)] hover:-translate-y-1.5 transition-all duration-300 flex flex-col md:flex-row items-center md:items-start text-center md:text-left gap-6 md:gap-0`}
               >
-                {/* Huge overlapping icon circle */}
-                <div className="md:absolute md:-left-8 md:top-1/2 md:-translate-y-1/2 w-28 h-28 rounded-full bg-gradient-to-br from-[#8b1a1a] to-[#4a0909] border-[6px] border-[#d4af37] flex items-center justify-center shadow-xl shrink-0 z-10">
+                {/* Gold sweep accent that grows on hover — rounded to match the card corners */}
+                <div className="absolute left-0 top-0 h-full w-1.5 rounded-l-3xl bg-gradient-to-b from-[#d4af37] to-[#8b1a1a] scale-y-0 group-hover:scale-y-100 origin-top transition-transform duration-500 hidden md:block" />
+
+                {/* Huge overlapping icon circle — pops in on reveal, spins gently on hover */}
+                <div className="badge-pop md:absolute md:-left-8 md:top-1/2 md:-translate-y-1/2 w-28 h-28 rounded-full bg-gradient-to-br from-[#8b1a1a] to-[#4a0909] border-[6px] border-[#d4af37] flex items-center justify-center shadow-xl shrink-0 z-10 transition-transform duration-500 group-hover:scale-105 group-hover:rotate-6">
                   {card.icon}
-                  {/* Decorative small leaves on the icon circle */}
                   <Leaf className="absolute -bottom-2 -right-2 w-8 h-8 text-green-700 bg-white rounded-full p-1 shadow-sm" />
                 </div>
-                
+
                 <div className="flex-1">
                   <h3 className="font-serif text-[#8b1a1a] text-2xl md:text-3xl font-bold tracking-wide mb-6 flex items-center justify-center md:justify-start gap-3">
                     {card.title}
                     <Leaf className="w-6 h-6 text-green-700 hidden md:block" />
                   </h3>
-                  <ul className="space-y-4 text-left w-full">
+                  <ul className="reveal-stagger space-y-4 text-left w-full">
                     {card.points.map((pt, idx) => (
                       <li key={idx} className="flex items-start gap-3 text-[16px] text-[#444] font-medium leading-relaxed">
                         <CheckCircle className="w-6 h-6 mt-0.5 text-[#8b1a1a] shrink-0 fill-[#8b1a1a] stroke-white" />
@@ -462,12 +623,12 @@ function Index() {
           </div>
 
           <div className="max-w-5xl mx-auto relative z-10">
-            <h3 className="font-serif text-3xl md:text-5xl text-white text-center mb-16 leading-tight">
+            <h3 className="reveal font-serif text-3xl md:text-5xl text-white text-center mb-8 leading-tight">
               Trust the brand, Trust the Quality,<br />
               <span className="opacity-90 italic">Trust the freshness.</span>
             </h3>
-            
-            <div className="flex justify-center mb-16">
+
+            <div className="reveal flex justify-center mb-12">
                <div className="inline-block bg-white/10 px-8 py-3 rounded-full border border-white/20 backdrop-blur-sm">
                   <p className="text-white text-center text-sm md:text-base tracking-wide uppercase">
                      <span className="font-bold">Our Commitment</span>
@@ -475,7 +636,7 @@ function Index() {
                </div>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-12">
+            <div className="reveal reveal-stagger grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-12">
               {[
                 { icon: <ShieldCheck className="w-8 h-8 text-[#8b1a1a]" />, label: "Brand Integrity" },
                 { icon: <Award className="w-8 h-8 text-[#8b1a1a]" />, label: "Uncompromising Quality" },
@@ -515,11 +676,9 @@ function Index() {
         </div>
 
         {/* Products + Order Section */}
-        <CartProvider>
-          <ProductsSection />
-          <OrderSection />
-          <FloatingCartBar />
-        </CartProvider>
+        <ProductsSection />
+        <OrderSection />
+        <FloatingCartBar />
 
         {/* Footer */}
         <footer className="bg-[#1a1a1a] py-12 px-6 md:px-12 text-center text-white/50 text-sm border-t border-white/10">
@@ -530,8 +689,12 @@ function Index() {
       </div>
 
 
-      {/* Fixed header */}
-      <header className="fixed top-4 inset-x-3 md:inset-x-12 z-50 flex items-center justify-between px-3 sm:px-6 md:px-8 py-2.5 sm:py-3 rounded-full backdrop-blur-md bg-black/40 border border-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.3)] gap-2">
+      {/* Fixed header — hidden during the video, fades in once the scrub completes */}
+      <header
+        ref={headerRef}
+        className="fixed top-4 inset-x-3 md:inset-x-12 z-50 flex items-center justify-between px-3 sm:px-6 md:px-8 py-2.5 sm:py-3 rounded-full backdrop-blur-md bg-black/40 border border-white/10 shadow-[0_8px_30px_rgba(0,0,0,0.3)] gap-2"
+        style={{ opacity: 0, pointerEvents: "none", transition: "opacity 0.3s ease" }}
+      >
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <img src={logo.url} alt="Bab Al Baraka" className="h-9 w-9 sm:h-10 sm:w-10 md:h-12 md:w-12 rounded-full ring-1 ring-[#d4af37]/60 shrink-0" />
           <div className="leading-tight min-w-0">
@@ -539,33 +702,65 @@ function Index() {
             <div className="hidden sm:block text-[10px] tracking-[0.3em] uppercase text-white/50">Farm Fresh Eggs</div>
           </div>
         </div>
-        <nav className="hidden md:flex items-center gap-8 text-sm tracking-wide text-white/80">
-          <button onClick={() => scrollToScene(0)} className="hover:text-white transition cursor-pointer">Story</button>
-          <button onClick={() => scrollToScene(1)} className="hover:text-white transition cursor-pointer">Craft</button>
-          <button onClick={() => scrollToScene(4)} className="hover:text-white transition cursor-pointer">Visit</button>
-        </nav>
-        <button
-          onClick={() => document.getElementById("order-section")?.scrollIntoView({ behavior: "smooth" })}
-          className="text-[10px] sm:text-xs tracking-[0.15em] sm:tracking-[0.2em] uppercase bg-[#8b1a1a] hover:bg-[#a02222] px-3 sm:px-5 py-2 sm:py-2.5 rounded-full transition text-white font-medium shadow-[0_4px_14px_rgba(139,26,26,0.5)] whitespace-nowrap shrink-0"
-        >
-          Order Now
-        </button>
-      </header>
-
-      {/* Scroll progress dots */}
-      <div className="fixed right-5 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-3">
-        {SCENES.map((_, i) => (
+        <nav className="hidden md:flex items-center gap-6 text-sm tracking-wide text-white/80">
+          <button onClick={() => scrollToId("product-hero")} className="hover:text-white transition cursor-pointer">
+            {lang === "en" ? "Home" : "الرئيسية"}
+          </button>
+          <button onClick={() => scrollToId("products-section")} className="hover:text-white transition cursor-pointer">
+            {lang === "en" ? "Products" : "المنتجات"}
+          </button>
           <button
-            key={i}
-            onClick={() => scrollToScene(i)}
-            className="w-2 h-2 rounded-full transition-all duration-300"
-            style={{
-              background: i === active ? "white" : "rgba(255,255,255,0.3)",
-              transform: i === active ? "scale(1.5)" : "scale(1)",
-            }}
-          />
-        ))}
-      </div>
+            onClick={() => scrollToId("order-section")}
+            className="relative flex items-center gap-1.5 hover:text-white transition cursor-pointer"
+          >
+            <ShoppingBasket className="w-4 h-4" />
+            {lang === "en" ? "Cart" : "السلة"}
+            {cartCount > 0 && (
+              <span className="absolute -top-2 -right-3 bg-[#8b1a1a] text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
+                {cartCount}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => lenisRef.current?.scrollTo(0, { duration: 1.4 })}
+            className="flex items-center gap-1.5 hover:text-white transition cursor-pointer"
+            title={lang === "en" ? "Replay the intro story" : "إعادة تشغيل القصة"}
+          >
+            <Film className="w-4 h-4" />
+            {lang === "en" ? "Story" : "القصة"}
+          </button>
+        </nav>
+
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* EN/AR label toggle — swaps nav + hero copy only, see note above */}
+          <button
+            onClick={() => setLang((l) => (l === "en" ? "ar" : "en"))}
+            className="hidden sm:flex items-center gap-1.5 text-white/70 hover:text-white transition text-xs font-medium tracking-wide px-2.5 py-2 rounded-full hover:bg-white/10"
+            title="Switch language"
+          >
+            <Globe className="w-4 h-4" />
+            {lang === "en" ? "AR" : "EN"}
+          </button>
+
+          {/* Customer login — hands off to the ops app's own login/order-history */}
+          <a
+            href={OPS_APP_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 rounded-full text-white/80 hover:text-white hover:bg-white/10 transition shrink-0"
+            title={lang === "en" ? "Login / Order history" : "تسجيل الدخول"}
+          >
+            <User className="w-4 h-4 sm:w-5 sm:h-5" />
+          </a>
+
+          <button
+            onClick={() => scrollToId("order-section")}
+            className="text-[10px] sm:text-xs tracking-[0.15em] sm:tracking-[0.2em] uppercase bg-[#8b1a1a] hover:bg-[#a02222] px-3 sm:px-5 py-2 sm:py-2.5 rounded-full transition text-white font-medium shadow-[0_4px_14px_rgba(139,26,26,0.5)] whitespace-nowrap shrink-0"
+          >
+            {lang === "en" ? "Order Now" : "اطلب الآن"}
+          </button>
+        </div>
+      </header>
     </div>
   );
 }

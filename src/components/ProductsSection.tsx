@@ -6,7 +6,7 @@ export function ProductsSection() {
   const { products, productsLoading, cart, addToCart } = useCart();
 
   return (
-    <div data-products-section className="relative z-10 bg-[#faf6f0] py-24 px-6 md:px-12 border-t border-[#e8ddd0] overflow-hidden">
+    <div id="products-section" data-products-section className="relative z-10 bg-[#faf6f0] py-24 px-6 md:px-12 border-t border-[#e8ddd0] overflow-hidden">
       {/* Decorative accents */}
       <div className="absolute -top-20 -left-20 w-72 h-72 bg-[#8b1a1a]/5 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute -bottom-20 -right-20 w-72 h-72 bg-[#d4af37]/10 rounded-full blur-3xl pointer-events-none" />
