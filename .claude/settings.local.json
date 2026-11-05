@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone *)",
+      "mcp__d6534610-83fe-4748-bbc1-8c427dbc11be__execute_sql"
+    ]
+  }
+}
