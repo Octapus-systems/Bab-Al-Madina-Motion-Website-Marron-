@@ -33,3 +33,6 @@ lambda-deploy.zip
 *.njsproj
 *.sln
 *.sw?
+
+# Vercel
+.vercel
