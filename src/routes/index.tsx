@@ -27,15 +27,22 @@ const logo = { url: "/Logo.png" };
 
 // Total scroll distance (in vh) driving the hero scrub — longer = smoother, more deliberate scrub.
 const HERO_VH = 1100;
+// Upright touch phones scrub a portrait frame sequence instead (scene1..5-mobile.mp4, each
+// motion-interpolated from 30 to 60fps with ffmpeg minterpolate, 540x960, concatenated).
+// Chosen once on load, so rotating doesn't swap.
+const MOBILE_HERO_VH = 800;
+const MOBILE_FRAME_COUNT = 1043;
+const mobileFramePath = (i: number) => `/frames-mobile/f-${String(i + 1).padStart(4, "0")}.webp`;
 // Fraction of the scrub range where the video finishes; the remainder is a brief hold on the
 // final frame so the video reads as fully complete before the landing page rises over it.
 const VIDEO_END_AT = 0.88;
 
-// Pre-extracted frame sequence (ffmpeg fps=8 off hero-story.mp4) drawn to a <canvas>.
+// Pre-extracted frame sequence (every frame of hero-story.mp4 at its native 30fps,
+// center-cropped to 1276x720) drawn to a <canvas>.
 // Video-element `currentTime` seeking is async per-browser and can't keep up with 60fps
 // scroll input even on an all-intra encode — seeks queue up and visibly lag. Drawing a
 // plain <img> to canvas is synchronous, so this is the only way to get a lag-free scrub.
-const FRAME_COUNT = 359;
+const FRAME_COUNT = 440;
 const framePath = (i: number) => `/frames/f-${String(i + 1).padStart(3, "0")}.webp`;
 
 // Bounding box of the egg tray within the video's final frame (source pixels, 1276x720).
@@ -92,6 +99,9 @@ function IndexInner() {
   // translation is a bigger follow-up.
   const [lang, setLang] = useState<"en" | "ar">("en");
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [mobileHero, setMobileHero] = useState(false);
+  const mobileHeroRef = useRef(false);
+  const frameCountRef = useRef(FRAME_COUNT);
   // Fly-down tray handoff: fixed overlay detaches from the video's final frame and lands
   // on the podium spot occupied by the in-flow landing tray.
   const trayFlyRef = useRef<HTMLImageElement>(null);
@@ -110,6 +120,12 @@ function IndexInner() {
   // Preload every frame up front (small jpgs, ~3MB total) and draw the first one as
   // soon as it lands so there's no blank flash before scrolling starts.
   useEffect(() => {
+    // Refs are read by the scroll effect below, which runs after this one.
+    const mobile = window.matchMedia("(max-width: 767px) and (orientation: portrait) and (pointer: coarse)").matches;
+    mobileHeroRef.current = mobile;
+    frameCountRef.current = mobile ? MOBILE_FRAME_COUNT : FRAME_COUNT;
+    if (mobile) setMobileHero(true);
+    const pathFor = mobile ? mobileFramePath : framePath;
     const canvas = canvasRef.current;
     const draw = (img: HTMLImageElement) => {
       if (!canvas) return;
@@ -129,15 +145,15 @@ function IndexInner() {
       ctx.drawImage(img, dx, dy, dw, dh);
     };
 
-    for (let i = 0; i < FRAME_COUNT; i++) {
+    for (let i = 0; i < frameCountRef.current; i++) {
       const img = new Image();
-      img.src = framePath(i);
+      img.src = pathFor(i);
       framesRef.current[i] = img;
       if (i === 0) img.onload = () => draw(img);
     }
 
     const onResize = () => {
-      const img = framesRef.current[lastFrameIdxRef.current] ?? framesRef.current[0];
+      const img = framesRef.current[Math.floor(lastFrameIdxRef.current)] ?? framesRef.current[0];
       if (img?.complete) draw(img);
     };
     window.addEventListener("resize", onResize);
@@ -170,7 +186,16 @@ function IndexInner() {
   // scrubbing driven off `window.scrollY` + a native listener could silently fall out of sync.
   const lenisRef = useRef<Lenis | null>(null);
   useEffect(() => {
-    const lenis = new Lenis({ lerp: 0.08, smoothWheel: true });
+    // On phones, syncTouch runs finger scrolling through Lenis's easing too, so a slow drag
+    // glides through the frames instead of stepping with each raw touchmove.
+    // Speed is untouched (touchMultiplier stays 1); a lower syncTouchLerp only softens the
+    // easing so slow drags glide through neighbouring frames instead of stepping.
+    const lenis = new Lenis({
+      lerp: 0.08,
+      smoothWheel: true,
+      syncTouch: mobileHeroRef.current,
+      syncTouchLerp: 0.05,
+    });
     lenisRef.current = lenis;
 
     // Sub-frame crossfade: the fractional index between two neighbouring frames becomes a
@@ -181,8 +206,9 @@ function IndexInner() {
       if (!canvas) return;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      const i0 = Math.min(FRAME_COUNT - 1, Math.floor(f));
-      const i1 = Math.min(FRAME_COUNT - 1, i0 + 1);
+      const last = frameCountRef.current - 1;
+      const i0 = Math.min(last, Math.floor(f));
+      const i1 = Math.min(last, i0 + 1);
       const frac = f - i0;
       const imgA = framesRef.current[i0];
       const imgB = framesRef.current[i1];
@@ -212,8 +238,9 @@ function IndexInner() {
       }
     };
 
+    let targetFrame = 0;
     const applyScroll = (scrollY: number) => {
-      const heroPx = (HERO_VH / 100) * window.innerHeight;
+      const heroPx = ((mobileHeroRef.current ? MOBILE_HERO_VH : HERO_VH) / 100) * window.innerHeight;
       const p = Math.min(1, Math.max(0, scrollY / heroPx));
 
       // Scroll-driven chrome — written straight to the DOM so React never re-renders mid-scroll.
@@ -275,19 +302,38 @@ function IndexInner() {
       });
 
       const videoP = Math.min(1, p / VIDEO_END_AT); // video completes at VIDEO_END_AT, then holds
-      const f = videoP * (FRAME_COUNT - 1); // fractional frame index
+      const f = videoP * (frameCountRef.current - 1); // fractional frame index
 
       // Decode lookahead: warm the next few frames off the hot path so drawImage never
       // has to synchronously decode a webp mid-scroll (the classic first-pass stutter).
       const ahead = Math.floor(f);
-      for (let i = ahead + 1; i <= Math.min(FRAME_COUNT - 1, ahead + 6); i++) {
+      for (let i = ahead + 1; i <= Math.min(frameCountRef.current - 1, ahead + 6); i++) {
         const im = framesRef.current[i];
         if (im?.complete) im.decode?.().catch(() => {});
       }
 
-      if (Math.abs(f - lastFrameIdxRef.current) > 0.005) {
-        lastFrameIdxRef.current = f;
-        drawBlended(f);
+      if (mobileHeroRef.current) {
+        if (Math.abs(f - lastFrameIdxRef.current) > 0.005) {
+          lastFrameIdxRef.current = f;
+          drawBlended(f);
+        }
+      } else {
+        // Desktop: the rAF loop glides the shown frame toward this target (see `loop`).
+        targetFrame = f;
+        if (lastFrameIdxRef.current < 0) {
+          lastFrameIdxRef.current = f; // first paint (incl. reload mid-scroll): no glide in
+          drawBlended(f);
+        }
+      }
+
+      // Mobile frames have no baked-in tray at the landscape bbox to hand off; just
+      // fade the canvas as the hero scrolls away and show the landing tray.
+      if (mobileHeroRef.current) {
+        const vh = window.innerHeight;
+        const t = Math.min(1, Math.max(0, (scrollY - (heroPx - vh)) / vh));
+        if (canvasRef.current) canvasRef.current.style.opacity = String(1 - t);
+        if (trayTargetRef.current) trayTargetRef.current.style.opacity = "1";
+        return;
       }
 
       // ── Tray fly-down handoff ─────────────────────────────────────────────
@@ -331,9 +377,29 @@ function IndexInner() {
     const onNativeScroll = () => applyScroll(window.scrollY);
     window.addEventListener("scroll", onNativeScroll, { passive: true });
 
+    // Desktop playback feel: wheel input arrives in bursts, so instead of snapping to the
+    // scroll's frame, the shown frame eases toward it and is speed-capped near the video's
+    // own pace (PLAYBACK_CAP source frames per 60Hz tick; source is 30fps, so 1 = 2x real
+    // time). A fast flick then plays through like footage rather than skipping ahead.
+    const EASE = 0.14;
+    const PLAYBACK_CAP = 0.9;
+    let lastTime = 0;
     let raf = 0;
     const loop = (time: number) => {
       lenis.raf(time);
+      if (!mobileHeroRef.current && lastFrameIdxRef.current >= 0) {
+        const dt = lastTime ? Math.min(4, (time - lastTime) / (1000 / 60)) : 1;
+        const shown = lastFrameIdxRef.current;
+        const diff = targetFrame - shown;
+        if (Math.abs(diff) > 0.005) {
+          const cap = PLAYBACK_CAP * dt;
+          const step = Math.max(-cap, Math.min(cap, diff * (1 - Math.pow(1 - EASE, dt))));
+          const next = Math.abs(diff) < 0.01 ? targetFrame : shown + step;
+          lastFrameIdxRef.current = next;
+          drawBlended(next);
+        }
+      }
+      lastTime = time;
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -420,7 +486,7 @@ function IndexInner() {
       {/* Sticky hero canvas: pre-extracted frame sequence, no overlays. Pins for the scrub
           range, then scrolls away naturally as the wrapper below runs out — the landing
           page rises over it like a normal page, no manual fade/crossfade needed. */}
-      <div style={{ height: `${HERO_VH}dvh` }} className="relative z-0">
+      <div style={{ height: `${mobileHero ? MOBILE_HERO_VH : HERO_VH}dvh` }} className="relative z-0">
         <div className="sticky top-0 h-[100dvh] w-full overflow-hidden bg-[#2a0003]">
           <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
 
@@ -429,7 +495,7 @@ function IndexInner() {
             <div
               key={beat.eyebrow}
               ref={(el) => { captionRefs.current[i] = el; }}
-              className={`absolute top-1/2 -translate-y-1/2 px-6 md:px-0 max-w-xl pointer-events-none ${
+              className={`absolute ${mobileHero ? "top-24" : "top-1/2 -translate-y-1/2"} px-6 md:px-0 max-w-xl pointer-events-none ${
                 beat.side === "right"
                   ? "right-0 md:right-16 text-right items-end"
                   : "left-0 md:left-16 text-left items-start"

@@ -3,7 +3,18 @@ import { createClient } from "@supabase/supabase-js";
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.warn(
+    "Supabase is not configured: set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY. Orders and admin will not work.",
+  );
+}
+
+// Placeholders stop a missing config from crashing every page that imports this
+// module. Requests made with them fail and return an error to the caller.
+export const supabase = createClient(
+  supabaseUrl || "http://supabase-not-configured.invalid",
+  supabaseAnonKey || "not-configured",
+);
 
 export type Product = {
   id: string;
