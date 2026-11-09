@@ -8,6 +8,7 @@ import { OrderSection } from "../components/OrderSection";
 import { ProductsSection } from "../components/ProductsSection";
 import { FloatingCartBar } from "../components/FloatingCartBar";
 import { CartProvider, useCart } from "../lib/cart-context";
+import { AnimHen, AnimBox, AnimTruck, AnimShield, AnimMedal, AnimClock, AnimPin, ANIM_ICON_CSS } from "../components/AnimatedIcons";
 
 // Customer login lives in the ops/admin app we already built (bab-al-madina) — its login
 // page handles auth, and the same account can see order history there. Override via
@@ -26,7 +27,7 @@ const ChickenIcon = ({ className }: { className?: string }) => (
 const logo = { url: "/Logo.png" };
 
 // Total scroll distance (in vh) driving the hero scrub — longer = smoother, more deliberate scrub.
-const HERO_VH = 1100;
+const HERO_VH = 1600; // longer travel = fewer frames per wheel notch (client found 1100 too fast)
 // Upright touch phones scrub a portrait frame sequence instead (scene1..5-mobile.mp4, each
 // motion-interpolated from 30 to 60fps with ffmpeg minterpolate, 540x960, concatenated).
 // Chosen once on load, so rotating doesn't swap.
@@ -61,10 +62,18 @@ const TRAY_BBOX = { x: 600, y: 195, w: 665, h: 400 };
 // `window` overrides the default hold length (Kitchen closes the story, so it lingers longer).
 const STORY_BEATS = [
   { p: 0.045, eyebrow: "Bab Al Baraka", line: "A Gateway to Blessings.", side: "right", anim: "reveal" },
-  { p: 0.148, eyebrow: "Heritage", line: "Rooted in tradition, raised with care.", side: "right", anim: "rise" },
-  { p: 0.443, eyebrow: "Care", line: "Every egg, inspected by hand.", side: "right", anim: "slide" },
-  { p: 0.590, eyebrow: "Freshness", line: "Cracked fresh. Cooked fresh.", side: "left", anim: "pop" },
-  { p: 0.760, eyebrow: "Kitchen", line: "From our farm to your table.", side: "left", anim: "rise", window: 0.22 },
+  { p: 0.148, eyebrow: "Heritage", line: "Good eggs. Good life. Delivered tomorrow.", side: "right", anim: "rise" },
+  // Hen-and-eggs scene (desktop frames ~107-147); short window so it doesn't touch Heritage/Care.
+  { p: 0.255, eyebrow: "Nourishment", line: "100% vegetarian feed.", side: "right", anim: "rise", window: 0.08 },
+  // Care runs from its old start (0.378) until the egg cracks over the pan (desktop frame
+  // ~296, p≈0.59), where Freshness takes over.
+  { p: 0.484, eyebrow: "Care", line: "No injected hormones.", side: "right", anim: "slide", window: 0.212 },
+  // Pan scene: from the egg cracking over the pan (p≈0.59) until the pan is lifted away
+  // (frame ~380, p≈0.765), handing straight over to the tray caption. `\n` = line break.
+  { p: 0.6775, eyebrow: "Freshness", line: "Freshness has an age.\nA Baraka in every egg.", side: "left", anim: "pop", window: 0.175 },
+  // Tray scene: hands bring the tray in (desktop frame ~388, p≈0.78) and set it down (~436,
+  // the video end at 0.88); held through the final-frame hold until just before the header.
+  { p: 0.850, eyebrow: "Kitchen", line: "Fresh from the farm, right to your doorstep.", side: "left", anim: "rise", window: 0.15 },
 ] as const;
 const BEAT_WINDOW = 0.13; // default total width of each beat's visible span — longer hold per caption
 
@@ -186,13 +195,71 @@ function IndexInner() {
   // scrubbing driven off `window.scrollY` + a native listener could silently fall out of sync.
   const lenisRef = useRef<Lenis | null>(null);
   useEffect(() => {
+    // Always open at the start of the story: stop the browser restoring the old scroll
+    // position on refresh, and reset any position it already applied.
+    if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+    window.scrollTo(0, 0);
+
     // On phones, syncTouch runs finger scrolling through Lenis's easing too, so a slow drag
     // glides through the frames instead of stepping with each raw touchmove.
     // Speed is untouched (touchMultiplier stays 1); a lower syncTouchLerp only softens the
     // easing so slow drags glide through neighbouring frames instead of stepping.
+    // Desktop: the page may not run ahead of the video. Each downward wheel step is trimmed
+    // so Lenis's target never passes the scroll position of the frame on screen plus a small
+    // lead, so a fast flick plays the story through smoothly and only then reaches the home
+    // banner. Upward scrolling, programmatic jumps (Skip to Shop) and phones are untouched.
+    // After the video, the home banner is a hard stop: the scroll that carried the visitor
+    // through the story (often trackpad momentum) can't run on toward the footer. The page
+    // stays on the banner until wheel input pauses for BANNER_PAUSE_MS, then scrolls on.
+    const LEAD_FRAMES = 18;
+    const BANNER_PAUSE_MS = 350; // a gap this long between wheel events = a new scroll, not a fling
+    const BANNER_MIN_VIEW_MS = 200; // banner always stays at least this long once reached
+    const BANNER_RELEASE_MS = 200; // after this long on the banner, scrolling down is always free
+    let lastWheelAt = 0;
+    let bannerReachedAt = 0;
+    const limitToVideo = (data: { deltaY: number }) => {
+      const now = performance.now();
+      const idleMs = now - lastWheelAt;
+      lastWheelAt = now;
+      if (mobileHeroRef.current || data.deltaY <= 0) return true;
+
+      const heroPx = (HERO_VH / 100) * window.innerHeight;
+      const last = frameCountRef.current - 1;
+      const shown = Math.max(0, lastFrameIdxRef.current);
+      const bannerEl = document.getElementById("product-hero");
+      const bannerTop = bannerEl ? bannerEl.getBoundingClientRect().top + window.scrollY : Infinity;
+
+      let maxTarget = Infinity;
+      if (shown < last - 0.5) {
+        maxTarget = (Math.min(last, shown + LEAD_FRAMES) / last) * VIDEO_END_AT * heroPx;
+      } else if (lenis.targetScroll < bannerTop - 1) {
+        maxTarget = bannerTop; // video done: run on to the banner, no further
+        bannerReachedAt = 0;
+      } else if (Math.abs(lenis.targetScroll - bannerTop) <= 1) {
+        // The clock starts once the banner has actually settled on screen (Lenis's eased
+        // position arrives well after its target). Always rest there for BANNER_MIN_VIEW_MS;
+        // after that only hold back a still-running fling (input with no break) until
+        // BANNER_RELEASE_MS, so a visitor who keeps scrolling is never stuck.
+        if (!bannerReachedAt && Math.abs(lenis.animatedScroll - bannerTop) < 2) bannerReachedAt = now;
+        const onBanner = bannerReachedAt ? now - bannerReachedAt : 0;
+        if (onBanner < BANNER_MIN_VIEW_MS || (idleMs < BANNER_PAUSE_MS && onBanner < BANNER_RELEASE_MS)) {
+          maxTarget = bannerTop;
+        }
+      }
+      if (maxTarget === Infinity) return true;
+
+      const allowed = maxTarget - lenis.targetScroll;
+      // Keep a tiny non-zero delta: Lenis treats 0 as "not a scroll" and would let the
+      // browser scroll natively instead of swallowing the event.
+      data.deltaY = Math.max(0.001, Math.min(data.deltaY, allowed));
+      return true;
+    };
+
     const lenis = new Lenis({
-      lerp: 0.08,
+      lerp: 0.07,
       smoothWheel: true,
+      wheelMultiplier: mobileHeroRef.current ? 1 : 0.8,
+      virtualScroll: limitToVideo,
       syncTouch: mobileHeroRef.current,
       syncTouchLerp: 0.05,
     });
@@ -381,8 +448,8 @@ function IndexInner() {
     // scroll's frame, the shown frame eases toward it and is speed-capped near the video's
     // own pace (PLAYBACK_CAP source frames per 60Hz tick; source is 30fps, so 1 = 2x real
     // time). A fast flick then plays through like footage rather than skipping ahead.
-    const EASE = 0.14;
-    const PLAYBACK_CAP = 0.9;
+    const EASE = 0.1;
+    const PLAYBACK_CAP = 0.6;
     let lastTime = 0;
     let raf = 0;
     const loop = (time: number) => {
@@ -413,16 +480,16 @@ function IndexInner() {
     };
   }, []);
 
-  const scrollToId = (id: string) => {
+  const scrollToId = (id: string, immediate = false) => {
     const el = document.getElementById(id);
-    if (el) lenisRef.current?.scrollTo(el, { duration: 1.3 });
+    if (el) lenisRef.current?.scrollTo(el, immediate ? { immediate: true } : { duration: 1.3 });
   };
 
   return (
     <div ref={scrollContainerRef} className="w-full relative">
       {isLoading && <EggLoader onComplete={() => setIsLoading(false)} />}
 
-      <style>{`
+      <style>{ANIM_ICON_CSS + `
         @keyframes trayDropIn {
           from { opacity: 0; transform: translateY(48px) scale(0.94); }
           to   { opacity: 1; transform: translateY(0) scale(1); }
@@ -452,9 +519,29 @@ function IndexInner() {
         /* Icon badge flourish on reveal */
         @keyframes badgePop { 0% { transform: scale(.4) rotate(-25deg); opacity: 0; } 60% { transform: scale(1.12) rotate(6deg); } 100% { transform: scale(1) rotate(0); opacity: 1; } }
         .reveal-in .badge-pop { animation: badgePop .7s cubic-bezier(.34,1.56,.64,1) both; animation-delay: .15s; }
+        /* Laid → Packed → Delivered timeline: line draws in, steps pop as it reaches them,
+           then a gold dot keeps travelling the route and each node pulses as it passes. */
+        .tl-line { transform: scaleX(0); transform-origin: left center; transition: transform 1.1s cubic-bezier(.65,0,.35,1) .35s; }
+        .reveal-in .tl-line { transform: scaleX(1); }
+        .tl-step { opacity: 0; transform: translateY(14px) scale(.7); }
+        .reveal-in .tl-step { animation: tlPop .7s cubic-bezier(.34,1.56,.64,1) both; animation-delay: calc(.35s + var(--i) * .5s); }
+        @keyframes tlPop { to { opacity: 1; transform: none; } }
+        .tl-dot { position: absolute; top: 50%; left: 0; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 9999px;
+          background: #d4af37; box-shadow: 0 0 0 3px rgba(212,175,55,.25), 0 0 14px 2px rgba(212,175,55,.8); opacity: 0; }
+        .reveal-in .tl-dot { animation: tlTravel 3.6s cubic-bezier(.45,0,.55,1) 1.9s infinite; }
+        @keyframes tlTravel {
+          0% { left: 0; opacity: 0; } 8% { opacity: 1; } 88% { opacity: 1; } 100% { left: 100%; opacity: 0; }
+        }
+        .reveal-in .tl-node { animation: tlPulse 3.6s ease-out infinite; animation-delay: calc(1.9s + var(--i) * 1.6s); }
+        @keyframes tlPulse {
+          0%, 22%, 100% { box-shadow: 0 0 0 2px #d4af37, 0 0 0 0 rgba(212,175,55,0); }
+          8% { box-shadow: 0 0 0 2px #d4af37, 0 0 0 10px rgba(212,175,55,.28); }
+        }
         @media (prefers-reduced-motion: reduce) {
           .reveal, .reveal-stagger > * { opacity: 1 !important; transform: none !important; }
           .reveal-in .badge-pop { animation: none; }
+          .tl-line, .tl-step { transform: none !important; opacity: 1 !important; transition: none !important; animation: none !important; }
+          .tl-dot, .reveal-in .tl-node { animation: none !important; }
         }
       `}</style>
 
@@ -465,7 +552,8 @@ function IndexInner() {
           straight to buying. Opacity/pointer-events driven by applyScroll. */}
       <button
         ref={skipRef}
-        onClick={() => scrollToId("products-section")}
+        // Jump (not glide) to the home banner: a smooth scroll would race through the whole story.
+        onClick={() => scrollToId("product-hero", true)}
         className="fixed top-5 right-4 md:right-8 z-50 group flex items-center gap-2 rounded-full bg-black/30 hover:bg-black/50 backdrop-blur-md border border-white/20 px-4 py-2 text-white/80 hover:text-white text-[11px] md:text-xs tracking-[0.2em] uppercase transition-colors"
         style={{ opacity: 1, transition: "opacity 0.3s ease, background-color 0.2s ease, color 0.2s ease" }}
       >
@@ -506,7 +594,7 @@ function IndexInner() {
                 {beat.eyebrow}
               </p>
               <p
-                className="font-serif text-4xl md:text-6xl lg:text-7xl text-white leading-[1.1]"
+                className="font-serif text-4xl md:text-6xl lg:text-7xl text-white leading-[1.1] whitespace-pre-line"
                 style={{ textShadow: "0 4px 30px rgba(0,0,0,0.65), 0 2px 8px rgba(0,0,0,0.5)" }}
               >
                 {beat.line}
@@ -618,13 +706,33 @@ function IndexInner() {
                 <span className="text-[#8b1a1a]">BAB AL BARAKA EGGS?</span>
              </h2>
              <div className="w-24 h-1 bg-gradient-to-r from-transparent via-[#d4af37] to-transparent mx-auto mt-6" />
+
+             {/* Freshness timeline: laid → packed → delivered */}
+             <div className="relative mt-12 grid grid-cols-3 max-w-2xl mx-auto">
+                <div className="tl-line absolute top-7 md:top-8 left-[16.67%] right-[16.67%] h-px bg-gradient-to-r from-[#8b1a1a]/30 via-[#d4af37] to-[#8b1a1a]/30">
+                   <span className="tl-dot" />
+                </div>
+                {[
+                  { icon: <AnimHen className="w-7 h-7 md:w-8 md:h-8 text-white" />, label: "Laid", when: "Today" },
+                  { icon: <AnimBox className="w-7 h-7 md:w-8 md:h-8 text-white" />, label: "Packed", when: "Today" },
+                  { icon: <AnimTruck className="w-7 h-7 md:w-8 md:h-8 text-white" />, label: "Delivered", when: "Tomorrow" },
+                ].map((s, i) => (
+                  <div key={s.label} className="tl-step relative flex flex-col items-center" style={{ "--i": i } as CSSProperties}>
+                     <div className="tl-node w-14 h-14 md:w-16 md:h-16 rounded-full bg-gradient-to-br from-[#8b1a1a] to-[#5a0f0f] ring-4 ring-[#faf6f0] shadow-[0_0_0_2px_#d4af37] flex items-center justify-center">
+                        {s.icon}
+                     </div>
+                     <p className="mt-3 font-serif text-base md:text-xl text-[#1a1a1a] font-bold">{s.label}</p>
+                     <p className="text-[11px] md:text-xs tracking-[0.25em] uppercase text-[#8b1a1a] font-semibold">{s.when}</p>
+                  </div>
+                ))}
+             </div>
           </div>
 
           {/* Three feature cards - Stacked and Stylized, alternating slide-in on reveal */}
           <div className="relative z-10 max-w-4xl mx-auto px-6 md:px-12 flex flex-col gap-12 mb-8">
             {[
               {
-                icon: <ChickenIcon className="w-12 h-12 text-white" />,
+                icon: <AnimHen className="w-12 h-12 text-white" />,
                 title: "FARM FRESH QUALITY",
                 points: [
                   <>Eggs are collected fresh from trusted farms.</>,
@@ -632,7 +740,7 @@ function IndexInner() {
                 ],
               },
               {
-                icon: <Package className="w-10 h-10 text-white" />,
+                icon: <AnimBox className="w-11 h-11 text-white" />,
                 title: "HYGIENIC PACKAGING PROCESS",
                 points: [
                   <>Eggs are inspected before packing.</>,
@@ -641,7 +749,7 @@ function IndexInner() {
                 ],
               },
               {
-                icon: <Truck className="w-10 h-10 text-white" />,
+                icon: <AnimTruck className="w-11 h-11 text-white" />,
                 title: "FRESH DELIVERY",
                 points: [
                   <>If the hen lays eggs today, we are packing the <strong className="font-bold text-[#8b1a1a]">same day</strong> and delivered <strong className="font-bold text-[#8b1a1a]">tomorrow</strong> fresh to your home.</>,
@@ -704,10 +812,10 @@ function IndexInner() {
 
             <div className="reveal reveal-stagger grid grid-cols-2 md:grid-cols-4 gap-8 md:gap-12">
               {[
-                { icon: <ShieldCheck className="w-8 h-8 text-[#8b1a1a]" />, label: "Brand Integrity" },
-                { icon: <Award className="w-8 h-8 text-[#8b1a1a]" />, label: "Uncompromising Quality" },
-                { icon: <Clock className="w-8 h-8 text-[#8b1a1a]" />, label: "Daily Freshness" },
-                { icon: <MapPin className="w-8 h-8 text-[#8b1a1a]" />, label: "Community Focus" },
+                { icon: <AnimShield className="w-9 h-9 text-[#8b1a1a]" />, label: "Brand Integrity" },
+                { icon: <AnimMedal className="w-9 h-9 text-[#8b1a1a]" />, label: "Uncompromising Quality" },
+                { icon: <AnimClock className="w-9 h-9 text-[#8b1a1a]" />, label: "Daily Freshness" },
+                { icon: <AnimPin className="w-9 h-9 text-[#8b1a1a]" />, label: "Community Focus" },
               ].map((item) => (
                 <div key={item.label} className="flex flex-col items-center text-center gap-5 group cursor-default">
                   {/* Egg-shaped icon container */}
@@ -748,9 +856,11 @@ function IndexInner() {
 
         {/* Footer */}
         <footer className="bg-[#1a1a1a] py-12 px-6 md:px-12 text-center text-white/50 text-sm border-t border-white/10">
-          <img src={logo.url} alt="Bab Al Baraka" className="h-16 w-16 mx-auto mb-4 rounded-full ring-1 ring-white/20" />
+          <img src={logo.url} alt="Bab Al Baraka" className="h-20 w-20 mx-auto mb-4 object-contain drop-shadow-[0_4px_10px_rgba(0,0,0,0.5)]" />
           <p className="font-serif text-xl text-white mb-2">Bab Al Baraka</p>
-          <p>© {new Date().getFullYear()} — A gateway to blessings.</p>
+          <p className="text-white/80 tracking-[0.15em] uppercase text-xs md:text-sm">Good eggs. Good life. Delivered tomorrow.</p>
+          <p className="text-[#d4af37] tracking-[0.15em] uppercase text-xs md:text-sm mt-1">A Baraka in every egg</p>
+          <p className="mt-4">© {new Date().getFullYear()} Bab Al Baraka</p>
         </footer>
       </div>
 
@@ -762,7 +872,7 @@ function IndexInner() {
         style={{ opacity: 0, pointerEvents: "none", transition: "opacity 0.3s ease" }}
       >
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-          <img src={logo.url} alt="Bab Al Baraka" className="h-9 w-9 sm:h-10 sm:w-10 md:h-12 md:w-12 rounded-full ring-1 ring-[#d4af37]/60 shrink-0" />
+          <img src={logo.url} alt="Bab Al Baraka" className="h-10 w-10 sm:h-11 sm:w-11 md:h-14 md:w-14 object-contain shrink-0 drop-shadow-[0_2px_6px_rgba(0,0,0,0.45)]" />
           <div className="leading-tight min-w-0">
             <div className="font-serif text-sm sm:text-lg md:text-xl text-white whitespace-nowrap">Bab Al Baraka</div>
             <div className="hidden sm:block text-[10px] tracking-[0.3em] uppercase text-white/50">Farm Fresh Eggs</div>
