@@ -31,7 +31,7 @@ const HERO_VH = 1600; // longer travel = fewer frames per wheel notch (client fo
 // Upright touch phones scrub a portrait frame sequence instead (scene1..5-mobile.mp4, each
 // motion-interpolated from 30 to 60fps with ffmpeg minterpolate, 540x960, concatenated).
 // Chosen once on load, so rotating doesn't swap.
-const MOBILE_HERO_VH = 800;
+const MOBILE_HERO_VH = 1150; // ~45% longer than the old 800, matching the desktop slow-down
 const MOBILE_FRAME_COUNT = 1043;
 const mobileFramePath = (i: number) => `/frames-mobile/f-${String(i + 1).padStart(4, "0")}.webp`;
 // Fraction of the scrub range where the video finishes; the remainder is a brief hold on the
@@ -194,6 +194,9 @@ function IndexInner() {
   // frame, and native scroll events aren't guaranteed to fire in lockstep with that, which is why
   // scrubbing driven off `window.scrollY` + a native listener could silently fall out of sync.
   const lenisRef = useRef<Lenis | null>(null);
+  // Until this time (rAF ms), a nav-button jump is running and the scroll cap must not
+  // pull it back.
+  const navJumpUntilRef = useRef(0);
   useEffect(() => {
     // Always open at the start of the story: stop the browser restoring the old scroll
     // position on refresh, and reset any position it already applied.
@@ -211,19 +214,15 @@ function IndexInner() {
     // After the video, the home banner is a hard stop: the scroll that carried the visitor
     // through the story (often trackpad momentum) can't run on toward the footer. The page
     // stays on the banner until wheel input pauses for BANNER_PAUSE_MS, then scrolls on.
-    const LEAD_FRAMES = 18;
+    const LEAD_FRAMES = mobileHeroRef.current ? 36 : 18; // ~0.6s of video either way
     const BANNER_PAUSE_MS = 350; // a gap this long between wheel events = a new scroll, not a fling
     const BANNER_MIN_VIEW_MS = 200; // banner always stays at least this long once reached
     const BANNER_RELEASE_MS = 200; // after this long on the banner, scrolling down is always free
     let lastWheelAt = 0;
     let bannerReachedAt = 0;
-    const limitToVideo = (data: { deltaY: number }) => {
-      const now = performance.now();
-      const idleMs = now - lastWheelAt;
-      lastWheelAt = now;
-      if (mobileHeroRef.current || data.deltaY <= 0) return true;
-
-      const heroPx = (HERO_VH / 100) * window.innerHeight;
+    // Furthest the scroll target may currently go (Infinity = no limit).
+    const scrollCap = (now: number, idleMs: number) => {
+      const heroPx = ((mobileHeroRef.current ? MOBILE_HERO_VH : HERO_VH) / 100) * window.innerHeight;
       const last = frameCountRef.current - 1;
       const shown = Math.max(0, lastFrameIdxRef.current);
       const bannerEl = document.getElementById("product-hero");
@@ -246,6 +245,15 @@ function IndexInner() {
           maxTarget = bannerTop;
         }
       }
+      return maxTarget;
+    };
+
+    const limitToVideo = (data: { deltaY: number }) => {
+      const now = performance.now();
+      const idleMs = now - lastWheelAt;
+      lastWheelAt = now;
+      if (data.deltaY <= 0) return true;
+      const maxTarget = scrollCap(now, idleMs);
       if (maxTarget === Infinity) return true;
 
       const allowed = maxTarget - lenis.targetScroll;
@@ -379,13 +387,8 @@ function IndexInner() {
         if (im?.complete) im.decode?.().catch(() => {});
       }
 
-      if (mobileHeroRef.current) {
-        if (Math.abs(f - lastFrameIdxRef.current) > 0.005) {
-          lastFrameIdxRef.current = f;
-          drawBlended(f);
-        }
-      } else {
-        // Desktop: the rAF loop glides the shown frame toward this target (see `loop`).
+      {
+        // The rAF loop glides the shown frame toward this target (see `loop`).
         targetFrame = f;
         if (lastFrameIdxRef.current < 0) {
           lastFrameIdxRef.current = f; // first paint (incl. reload mid-scroll): no glide in
@@ -444,17 +447,27 @@ function IndexInner() {
     const onNativeScroll = () => applyScroll(window.scrollY);
     window.addEventListener("scroll", onNativeScroll, { passive: true });
 
-    // Desktop playback feel: wheel input arrives in bursts, so instead of snapping to the
-    // scroll's frame, the shown frame eases toward it and is speed-capped near the video's
-    // own pace (PLAYBACK_CAP source frames per 60Hz tick; source is 30fps, so 1 = 2x real
-    // time). A fast flick then plays through like footage rather than skipping ahead.
+    // Playback feel (desktop and phone): input arrives in bursts, so instead of snapping to
+    // the scroll's frame, the shown frame eases toward it and is speed-capped near the
+    // video's own pace (PLAYBACK_CAP source frames per 60Hz tick). Desktop frames are 30fps
+    // and phone frames 60fps, so the phone cap is doubled to give the same ~1.2x real time.
+    // A fast flick then plays through like footage rather than skipping ahead.
     const EASE = 0.1;
-    const PLAYBACK_CAP = 0.6;
+    const PLAYBACK_CAP = mobileHeroRef.current ? 1.2 : 0.6;
     let lastTime = 0;
     let raf = 0;
     const loop = (time: number) => {
+      // Lenis adds a touch fling on finger release after limitToVideo has run, so re-apply
+      // the cap every frame and pull an overshooting target back (user scrolls only: nav
+      // buttons jump programmatically and set navJumpUntilRef).
+      if (time > navJumpUntilRef.current && lenis.targetScroll > lenis.animatedScroll) {
+        const cap = scrollCap(time, time - lastWheelAt);
+        if (lenis.targetScroll > cap + 1) {
+          lenis.scrollTo(cap, { lerp: mobileHeroRef.current ? 0.05 : 0.07 });
+        }
+      }
       lenis.raf(time);
-      if (!mobileHeroRef.current && lastFrameIdxRef.current >= 0) {
+      if (lastFrameIdxRef.current >= 0) {
         const dt = lastTime ? Math.min(4, (time - lastTime) / (1000 / 60)) : 1;
         const shown = lastFrameIdxRef.current;
         const diff = targetFrame - shown;
@@ -482,6 +495,7 @@ function IndexInner() {
 
   const scrollToId = (id: string, immediate = false) => {
     const el = document.getElementById(id);
+    navJumpUntilRef.current = performance.now() + 1600;
     if (el) lenisRef.current?.scrollTo(el, immediate ? { immediate: true } : { duration: 1.3 });
   };
 
