@@ -8,6 +8,7 @@ import { OrderSection } from "../components/OrderSection";
 import { ProductsSection } from "../components/ProductsSection";
 import { FloatingCartBar } from "../components/FloatingCartBar";
 import { CartProvider, useCart } from "../lib/cart-context";
+import { SITE_URL, SITE_DESCRIPTION } from "../lib/site";
 import { AnimHen, AnimBox, AnimTruck, AnimShield, AnimMedal, AnimClock, AnimPin, ANIM_ICON_CSS } from "../components/AnimatedIcons";
 
 // Customer login lives in the ops/admin app we already built (bab-al-madina) — its login
@@ -80,9 +81,26 @@ const BEAT_WINDOW = 0.13; // default total width of each beat's visible span —
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Bab Al Baraka — A Gateway to Blessings" },
-      { name: "description", content: "Bab Al Baraka brings together heritage, hospitality, and craft." },
-      { property: "og:title", content: "Bab Al Baraka" },
+      { title: "Bab Al Baraka — Farm-Fresh Eggs Delivered Across the UAE" },
+      { name: "description", content: SITE_DESCRIPTION },
+      { property: "og:title", content: "Bab Al Baraka — Farm-Fresh Eggs Delivered Across the UAE" },
+      { property: "og:url", content: `${SITE_URL}/` },
+    ],
+    links: [{ rel: "canonical", href: `${SITE_URL}/` }],
+    scripts: [
+      {
+        type: "application/ld+json",
+        children: JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "Organization",
+          name: "Bab Al Baraka",
+          url: `${SITE_URL}/`,
+          logo: `${SITE_URL}/Logo.png`,
+          description: SITE_DESCRIPTION,
+          slogan: "A Baraka in every egg",
+          areaServed: { "@type": "Country", name: "United Arab Emirates" },
+        }),
+      },
     ],
   }),
   component: Index,

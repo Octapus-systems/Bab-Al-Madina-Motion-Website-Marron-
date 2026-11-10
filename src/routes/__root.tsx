@@ -10,6 +10,7 @@ import {
 import { type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
+import { SITE_URL, SITE_DESCRIPTION } from "../lib/site";
 
 function NotFoundComponent() {
   return (
@@ -74,13 +75,20 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "Bab Al Baraka" },
-      { name: "description", content: "A Gateway to Blessings" },
+      { name: "description", content: SITE_DESCRIPTION },
       { name: "author", content: "Bab Al Baraka" },
+      { name: "theme-color", content: "#3a060d" },
+      { property: "og:site_name", content: "Bab Al Baraka" },
       { property: "og:title", content: "Bab Al Baraka" },
-      { property: "og:description", content: "A Gateway to Blessings" },
+      { property: "og:description", content: SITE_DESCRIPTION },
       { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-      { name: "twitter:site", content: "@BabAlBaraka" },
+      { property: "og:locale", content: "en_AE" },
+      { property: "og:image", content: `${SITE_URL}/og-image.jpg` },
+      { property: "og:image:width", content: "1200" },
+      { property: "og:image:height", content: "630" },
+      { property: "og:image:alt", content: "Bab Al Baraka logo beside a tray of 30 fresh eggs" },
+      { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:image", content: `${SITE_URL}/og-image.jpg` },
     ],
     links: [
       {

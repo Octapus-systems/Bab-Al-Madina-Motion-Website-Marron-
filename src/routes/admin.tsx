@@ -6,7 +6,7 @@ import { Loader2, LogOut, Pencil, Plus, Trash2, X } from "lucide-react";
 
 export const Route = createFileRoute("/admin")({
   head: () => ({
-    meta: [{ title: "Admin — Bab Al Baraka" }],
+    meta: [{ title: "Admin — Bab Al Baraka" }, { name: "robots", content: "noindex, nofollow" }],
   }),
   component: AdminPage,
 });
