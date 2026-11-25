@@ -6,7 +6,7 @@ The API reads the website's own Supabase database (the `orders`, `order_items`, 
 
 | | |
 |---|---|
-| **Base URL** | `https://suoslblooqkrktwzghqt.supabase.co/functions/v1/admin-orders-api` |
+| **Base URL** | `https://svpibekwuiexrrgygxwz.supabase.co/functions/v1/admin-orders-api` |
 | **Format** | JSON (UTF-8). Arabic product names are returned as-is. |
 | **Methods** | `GET` only. The API cannot create, change or delete orders. |
 | **Auth** | `x-api-key` header |
@@ -20,7 +20,7 @@ Send the API key in the `x-api-key` header on every request:
 
 ```http
 GET /functions/v1/admin-orders-api/orders HTTP/1.1
-Host: suoslblooqkrktwzghqt.supabase.co
+Host: svpibekwuiexrrgygxwz.supabase.co
 x-api-key: <YOUR_ADMIN_API_KEY>
 ```
 
@@ -50,7 +50,7 @@ If the key is missing or wrong, the API returns `401`:
 
 ```bash
 curl -H "x-api-key: $BAB_ORDERS_API_KEY" \
-  https://suoslblooqkrktwzghqt.supabase.co/functions/v1/admin-orders-api/health
+  https://svpibekwuiexrrgygxwz.supabase.co/functions/v1/admin-orders-api/health
 ```
 
 ```json
@@ -81,7 +81,7 @@ curl -H "x-api-key: $BAB_ORDERS_API_KEY" \
 
 ```bash
 curl -H "x-api-key: $BAB_ORDERS_API_KEY" \
-  "https://suoslblooqkrktwzghqt.supabase.co/functions/v1/admin-orders-api/orders?status=new,confirmed&limit=20"
+  "https://svpibekwuiexrrgygxwz.supabase.co/functions/v1/admin-orders-api/orders?status=new,confirmed&limit=20"
 ```
 
 **Example response `200`**
@@ -138,7 +138,7 @@ curl -H "x-api-key: $BAB_ORDERS_API_KEY" \
 
 ```bash
 curl -H "x-api-key: $BAB_ORDERS_API_KEY" \
-  https://suoslblooqkrktwzghqt.supabase.co/functions/v1/admin-orders-api/orders/1003
+  https://svpibekwuiexrrgygxwz.supabase.co/functions/v1/admin-orders-api/orders/1003
 ```
 
 **Response `200`:** `{ "data": { ...one order, same shape as in the list... } }`
@@ -196,7 +196,7 @@ Every error has the same shape: `{ "error": { "code": "...", "message": "..." } 
 **Node.js (server-side) example**
 
 ```js
-const BASE = "https://suoslblooqkrktwzghqt.supabase.co/functions/v1/admin-orders-api";
+const BASE = "https://svpibekwuiexrrgygxwz.supabase.co/functions/v1/admin-orders-api";
 
 async function babOrders(path, params = {}) {
   const url = new URL(BASE + path);
@@ -214,7 +214,7 @@ const { data: order } = await babOrders("/orders/1003");
 **PHP example**
 
 ```php
-$ch = curl_init("https://suoslblooqkrktwzghqt.supabase.co/functions/v1/admin-orders-api/orders?status=new");
+$ch = curl_init("https://svpibekwuiexrrgygxwz.supabase.co/functions/v1/admin-orders-api/orders?status=new");
 curl_setopt_array($ch, [
   CURLOPT_RETURNTRANSFER => true,
   CURLOPT_HTTPHEADER => ["x-api-key: " . getenv("BAB_ORDERS_API_KEY")],
@@ -226,7 +226,7 @@ $orders = json_decode(curl_exec($ch), true)["data"];
 
 ## 6. Key management
 
-These steps are done in the Supabase dashboard: project `suoslblooqkrktwzghqt` → **Edge Functions → Secrets**.
+These steps are done in the Supabase dashboard: project `svpibekwuiexrrgygxwz` → **Edge Functions → Secrets**.
 
 1. Generate a new key, for example with `openssl rand -hex 24`, and prefix it with `bam_live_`.
 2. Compute its SHA-256 hash: `printf '%s' "<new key>" | sha256sum`.

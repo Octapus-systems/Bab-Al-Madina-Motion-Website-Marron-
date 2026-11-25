@@ -15,7 +15,7 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-const DEFAULT_KEY_HASHES = ["82592ac8430a54a971d43ac61af0cad31f2abf9dac0265c3a1283064866516f8"];
+const DEFAULT_KEY_HASHES = ["2bdfb53d5c2b6eb9ba73266517839b6282701615ddeeba6da8eb85bfe8395fc7"];
 const KEY_HASHES = (Deno.env.get("ADMIN_API_KEY_HASHES") ?? "")
   .split(",")
   .map((h) => h.trim().toLowerCase())
